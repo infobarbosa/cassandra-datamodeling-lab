@@ -88,6 +88,7 @@ Padrão de acesso: *"dado um NIS, quais as parcelas do beneficiário?"*
 cql "SELECT mes_referencia, nome, nm_municipio, valor_parcela
      FROM bolsa_familia.pagamentos_por_nis
      WHERE nis = '26913139991';"
+
 ```
 
 Repare: 10 parcelas (pagamentos retroativos), já ordenadas da referência mais recente para a mais antiga — a clustering key `mes_referencia DESC` fez isso no layout físico, sem `ORDER BY`.
@@ -98,6 +99,7 @@ A clustering key também permite **range scan dentro da partição**:
 cql "SELECT mes_referencia, valor_parcela
      FROM bolsa_familia.pagamentos_por_nis
      WHERE nis = '26913139991' AND mes_referencia >= 202601;"
+
 ```
 
 Ligue o `TRACING` e observe o custo: uma partição, uma leitura pontual.
@@ -106,12 +108,14 @@ Ligue o `TRACING` e observe o custo: uma partição, uma leitura pontual.
 time docker exec -it cassandra-bf cqlsh -e "
     TRACING ON;
     SELECT * FROM bolsa_familia.pagamentos_por_nis WHERE nis = '26913139991';"
+
 ```
 
 Agora tente consultar por uma coluna que **não** é a partition key:
 
 ```sh
 cql "SELECT * FROM bolsa_familia.pagamentos_por_nis WHERE nm_municipio = 'PEDRA LAVRADA';"
+
 ```
 
 O Cassandra recusa: sem a partition key ele teria que varrer **todas** as partições do cluster. O `ALLOW FILTERING` sugerido no erro faz exatamente isso — experimente se tiver paciência, mas em produção a resposta correta é **outra tabela, modelada para essa consulta** (Módulo 3).
@@ -127,6 +131,7 @@ cql "SELECT nis, nome, mes_referencia, valor_parcela
      FROM bolsa_familia.pagamentos_por_municipio
      WHERE uf = 'PB' AND cd_municipio = '2123'
      LIMIT 20;"
+
 ```
 
 (PB / 2123 = Pedra Lavrada, ~1.200 pagamentos.)
@@ -135,6 +140,7 @@ Com partition key composta, **todos os componentes são obrigatórios**:
 
 ```sh
 cql "SELECT * FROM bolsa_familia.pagamentos_por_municipio WHERE uf = 'PB' LIMIT 10;"
+
 ```
 
 Falha: `uf` sozinho não identifica a partição — o hash é calculado sobre o par completo. Guarde esse erro: ele é a diferença entre partition key composta (este módulo) e múltiplas clustering keys (Módulo 5).
@@ -150,6 +156,7 @@ cql "SELECT valor_parcela, nome, mes_referencia
      FROM bolsa_familia.pagamentos_por_municipio_valor
      WHERE uf = 'PB' AND cd_municipio = '2123'
      LIMIT 10;"
+
 ```
 
 Range pela clustering key — "parcelas acima de R$ 900 em São Paulo capital":
@@ -159,6 +166,7 @@ cql "SELECT valor_parcela, nome
      FROM bolsa_familia.pagamentos_por_municipio_valor
      WHERE uf = 'SP' AND cd_municipio = '7107' AND valor_parcela >= 900
      LIMIT 20;"
+
 ```
 
 O custo dessa mágica: uma tabela por ordenação. Espaço em disco é o preço; sort em tempo de leitura, a economia. **No Cassandra, escreve-se o dado N vezes para ler barato N vezes.**
@@ -176,11 +184,15 @@ time docker exec -it cassandra-bf cqlsh -e "
     SELECT nis, nome, valor_parcela FROM bolsa_familia.pagamentos_por_municipio
     WHERE uf = 'BA' AND cd_municipio = '3965' LIMIT 5;"
 
+```
+
+```sh
 # Partição gigante (2,3M linhas: a Bahia inteira em uma partição)
 time docker exec -it cassandra-bf cqlsh -e "
     TRACING ON;
     SELECT nis, nome, valor_parcela FROM bolsa_familia.pagamentos_por_uf
     WHERE uf = 'BA' AND cd_municipio = '3965' LIMIT 5;"
+
 ```
 
 **Surpresa: as duas respondem rápido.** A leitura pontual usa o índice da partição + clustering keys para saltar direto ao trecho desejado — o tamanho da partição quase não pesa numa leitura assim. Então onde mora o problema? Em tudo que precisa **atravessar a partição inteira**:
@@ -191,9 +203,13 @@ time docker exec -it cassandra-bf cqlsh -e "
     SELECT count(*) FROM bolsa_familia.pagamentos_por_municipio
     WHERE uf = 'PB' AND cd_municipio = '2123';"
 
+```
+
+```sh
 # Varredura da partição gigante: o servidor DESISTE (ReadTimeout)
 time docker exec -it cassandra-bf cqlsh -e "
     SELECT count(*) FROM bolsa_familia.pagamentos_por_uf WHERE uf = 'BA';"
+
 ```
 
 A segunda consulta falha com `ReadTimeout`: o coordinator estoura o `read_request_timeout` do servidor antes de terminar de varrer 2,3M de linhas. A partição ficou grande demais até para ser **lida por inteiro** dentro do tempo padrão.
@@ -202,13 +218,24 @@ Veja as estatísticas físicas — repare em *Compacted partition maximum bytes*
 
 ```sh
 docker exec -it cassandra-bf nodetool tablestats bolsa_familia.pagamentos_por_uf
+
+```
+
+```sh
 docker exec -it cassandra-bf nodetool tablehistograms bolsa_familia pagamentos_por_uf
+
 ```
 
 Compare com a tabela bem particionada:
 
 ```sh
 docker exec -it cassandra-bf nodetool tablestats bolsa_familia.pagamentos_por_municipio
+
+```
+
+```sh
+docker exec -it cassandra-bf nodetool tablehistograms bolsa_familia pagamentos_por_municipio
+
 ```
 
 Por que é grave em produção, mesmo quando as leituras pontuais parecem saudáveis: partições gigantes concentram carga em poucos nós (hotspots), pressionam heap/GC na leitura, na compactação e no repair, e não se dividem — **partição não escala horizontalmente; o cluster escala em número de partições**. Regra prática: manter partições abaixo de ~100 MB.
@@ -231,4 +258,5 @@ Crie a tabela do item 1 e insira manualmente 3 a 5 linhas de teste (`INSERT INTO
 
 ```sh
 docker rm -f cassandra-bf
+
 ```
