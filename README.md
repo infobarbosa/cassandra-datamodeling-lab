@@ -17,7 +17,11 @@ Para isso, usamos uma base real: os **pagamentos do programa Bolsa Família** (c
 ```sh
 docker pull ghcr.io/infobarbosa/cassandra-bolsafamilia-preloaded:5.0.8
 
+```
+
+```sh
 docker run --name cassandra-bf -d -p 9042:9042 ghcr.io/infobarbosa/cassandra-bolsafamilia-preloaded:5.0.8
+
 ```
 
 Aguarde o container ficar saudável (1 a 2 minutos):
@@ -28,24 +32,28 @@ until [ "$(docker inspect -f '{{.State.Health.Status}}' cassandra-bf)" = "health
     sleep 5
 done
 echo "Pronto!"
+
 ```
 
 Você não precisa instalar o `cqlsh`: vamos usar o que já vem dentro do container. Crie um atalho para a sessão:
 
 ```sh
 alias cql='docker exec -it cassandra-bf cqlsh -e'
+
 ```
 
 Teste:
 
 ```sh
 cql "SELECT cluster_name, release_version FROM system.local;"
+
 ```
 
 Valide o ambiente (opcional):
 
 ```sh
-./scripts/check.sh
+curl -sS https://raw.githubusercontent.com/infobarbosa/cassandra-datamodeling-lab/main/scripts/check.sh | bash
+
 ```
 
 ---
