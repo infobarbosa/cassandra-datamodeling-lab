@@ -159,7 +159,7 @@ O custo dessa mágica: uma tabela por ordenação. Espaço em disco é o preço;
 
 ## Módulo 5 — O anti-pattern: partições gigantes
 
-A tabela `pagamentos_por_uf` particiona por UF — só 27 valores possíveis. A partição da Bahia tem **2,3 milhões de linhas (~250 MB)**. Compare a mesma consulta (um município da BA) nas duas modelagens:
+A tabela `pagamentos_por_uf` particiona por UF — só 27 valores possíveis. A partição da Bahia tem **2,3 milhões de linhas (~224 MB compactados)**. Compare a mesma consulta (um município da BA) nas duas modelagens:
 
 ```sh
 # Partição saudável (~24 mil linhas: Vitória da Conquista)
@@ -175,12 +175,20 @@ time docker exec -it cassandra-bf cqlsh -e "
     WHERE uf = 'BA' AND cd_municipio = '3965' LIMIT 5;"
 ```
 
-Compare no tracing o número de SSTables tocadas e a latência. Agora meça a dor de varrer a partição inteira:
+**Surpresa: as duas respondem rápido.** A leitura pontual usa o índice da partição + clustering keys para saltar direto ao trecho desejado — o tamanho da partição quase não pesa numa leitura assim. Então onde mora o problema? Em tudo que precisa **atravessar a partição inteira**:
 
 ```sh
-time docker exec -it cassandra-bf cqlsh --request-timeout=600 -e "
+# Varredura da partição saudável: instantânea
+time docker exec -it cassandra-bf cqlsh -e "
+    SELECT count(*) FROM bolsa_familia.pagamentos_por_municipio
+    WHERE uf = 'PB' AND cd_municipio = '2123';"
+
+# Varredura da partição gigante: o servidor DESISTE (ReadTimeout)
+time docker exec -it cassandra-bf cqlsh -e "
     SELECT count(*) FROM bolsa_familia.pagamentos_por_uf WHERE uf = 'BA';"
 ```
+
+A segunda consulta falha com `ReadTimeout`: o coordinator estoura o `read_request_timeout` do servidor antes de terminar de varrer 2,3M de linhas. A partição ficou grande demais até para ser **lida por inteiro** dentro do tempo padrão.
 
 Veja as estatísticas físicas — repare em *Compacted partition maximum bytes*:
 
@@ -195,7 +203,7 @@ Compare com a tabela bem particionada:
 docker exec -it cassandra-bf nodetool tablestats bolsa_familia.pagamentos_por_municipio
 ```
 
-Por que é grave em produção: partições gigantes concentram carga em poucos nós (hotspots), pressionam heap/GC na leitura e na compactação, e não se dividem — **partição não escala horizontalmente; o cluster escala em número de partições**. Regra prática: manter partições abaixo de ~100 MB.
+Por que é grave em produção, mesmo quando as leituras pontuais parecem saudáveis: partições gigantes concentram carga em poucos nós (hotspots), pressionam heap/GC na leitura, na compactação e no repair, e não se dividem — **partição não escala horizontalmente; o cluster escala em número de partições**. Regra prática: manter partições abaixo de ~100 MB.
 
 ---
 
